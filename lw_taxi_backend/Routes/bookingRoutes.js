@@ -9,6 +9,7 @@ router.get("/admin/all", authMiddleware, bookingController.getAllBookings);
 
 
 router.get("/:bookingId", authMiddleware, bookingController.getBookingStatus);
+router.patch("/:bookingId/status", authMiddleware, bookingController.updateBookingStatus);
 router.patch("/:bookingId/cancel", authMiddleware, bookingController.cancelBooking);
 router.patch("/:bookingId/payment", authMiddleware, bookingController.updatePaymentStatus); 
 router.post("/", authMiddleware, bookingController.createBooking);
