@@ -13,7 +13,7 @@ const app = express();
 const server = http.createServer(app);
 
 app.use(cors({
-  origin: "http://localhost:5173",
+  origin: process.env.FRONTEND_URL || "http://localhost:5173",
   credentials: true
 }));
 app.use(express.json());
@@ -28,7 +28,7 @@ app.get("/", (req, res) => res.send(" Taxi Management System API Running!"));
 
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:5173",
+    origin: process.env.FRONTEND_URL || "http://localhost:5173",
     methods: ["GET", "POST", "PATCH", "PUT", "DELETE"],
     credentials: true,
   },
@@ -206,7 +206,7 @@ mongoose.connect(process.env.MONGO_URI)
 
 
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log("🔌 Socket.IO ready for connections");
 });
