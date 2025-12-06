@@ -32,7 +32,7 @@ export default function LoginPopup({ switchToRegister, handleCloseLogin }) {
 
         // Save to localStorage
         localStorage.setItem("token", token);
-        localStorage.setItem("userId", driver.id || driver._id);
+        localStorage.setItem("userId", driver._id);
         localStorage.setItem("userName", driver.name);
         localStorage.setItem("role", "DRIVER");
         localStorage.setItem("userRole", "DRIVER");
@@ -57,7 +57,7 @@ export default function LoginPopup({ switchToRegister, handleCloseLogin }) {
 
           // Save to localStorage
           localStorage.setItem("token", token);
-          localStorage.setItem("userId", user.id || user._id);
+          localStorage.setItem("userId", user._id || user.id);
           localStorage.setItem("userName", user.name);
           localStorage.setItem("role", user.role);
           localStorage.setItem("userRole", user.role);
