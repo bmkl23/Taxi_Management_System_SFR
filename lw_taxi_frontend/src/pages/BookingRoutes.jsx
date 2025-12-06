@@ -3,16 +3,8 @@ import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import axios from "axios";
-import io from "socket.io-client";
 
 const API_URL = "https://taxibackend-two.vercel.app";
-// const socket = io(API_URL);
-const socket = {
-  on: () => {},
-  off: () => {},
-  emit: () => {},
-  disconnect: () => {}
-};
 
 const sriLankaBounds = [
   [5.9189, 79.6524],
@@ -29,40 +21,10 @@ const BookingRoutes = ({ user }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [startName, setStartName] = useState("Detecting your location...");
   const [endName, setEndName] = useState("Select destination");
+  const [bookingStatus, setBookingStatus] = useState(null);
   const mapRef = useRef();
   const routingControlRef = useRef(null);
-
-
-  useEffect(() => {
-    const userId = localStorage.getItem("userId");
-
-    if (userId) {
-      console.log("Registering user socket:", userId);
-      socket.emit("user_connect", userId);
-    }
-
-
-    socket.on("booking_confirmed", (data) => {
-      console.log("booking_confirmed:", data);
-      alert(`Your booking has been accepted by a driver!`);
-    });
-
-    socket.on("booking_status_update", (data) => {
-      console.log("Status Update:", data);
-    
-    });
-
-    socket.on("trip_completed", (data) => {
-      console.log("Trip Completed:", data);
-      alert("Your trip has been completed!");
-    });
-
-    return () => {
-      socket.off("booking_confirmed");
-      socket.off("booking_status_update");
-      socket.off("trip_completed");
-    };
-  }, []);
+  const bookingCheckIntervalRef = useRef(null);
 
   useEffect(() => {
     if (navigator.geolocation) {
@@ -94,9 +56,7 @@ const BookingRoutes = ({ user }) => {
       );
       const data = await response.json();
       const addr = data.address;
-
-      let name =
-        addr.city || addr.town || addr.village || addr.county || "Location";
+      let name = addr.city || addr.town || addr.village || addr.county || "Location";
       return name;
     } catch (err) {
       console.error("Geocoding error:", err);
@@ -124,7 +84,6 @@ const BookingRoutes = ({ user }) => {
         mapRef.current.removeLayer(routingControlRef.current);
       }
     } catch (removeErr) {
-      
       console.warn("Failed to remove old route layer:", removeErr);
     } finally {
       routingControlRef.current = null;
@@ -207,9 +166,46 @@ const BookingRoutes = ({ user }) => {
     setSuggestions([]);
     setRouteInfo({ distance: 0, duration: 0 });
     setEndName("Select destination");
+    setBookingStatus(null);
+    if (bookingCheckIntervalRef.current) {
+      clearInterval(bookingCheckIntervalRef.current);
+    }
     if (mapRef.current && currentPos) {
       mapRef.current.setView(currentPos, 13);
     }
+  };
+
+  // ✅ POLL FOR BOOKING STATUS UPDATES
+  const pollBookingStatus = (bookingId, token) => {
+    if (bookingCheckIntervalRef.current) {
+      clearInterval(bookingCheckIntervalRef.current);
+    }
+
+    bookingCheckIntervalRef.current = setInterval(async () => {
+      try {
+        const response = await axios.get(
+          `${API_URL}/api/bookings/${bookingId}`,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }
+        );
+
+        const booking = response.data;
+        setBookingStatus(booking.status);
+
+        if (booking.status === "ACCEPTED") {
+          alert(`🎉 Driver found!\n\nDriver: ${booking.driverName}\nContact: ${booking.driverPhone}`);
+          clearInterval(bookingCheckIntervalRef.current);
+          handleRefresh();
+        } else if (booking.status === "COMPLETED" || booking.status === "CANCELLED") {
+          clearInterval(bookingCheckIntervalRef.current);
+        }
+      } catch (err) {
+        console.error("Error polling booking status:", err);
+      }
+    }, 2000); // Poll every 2 seconds
   };
 
   const saveRoute = async () => {
@@ -242,6 +238,8 @@ const BookingRoutes = ({ user }) => {
           distance: routeInfo.distance,
           estimatedTime: routeInfo.duration,
           estimatedFare: parseFloat(fare),
+          pickupCoords: currentPos,
+          dropoffCoords: destination,
         },
         {
           headers: {
@@ -250,20 +248,24 @@ const BookingRoutes = ({ user }) => {
         }
       );
 
+      const bookingId = response.data.bookingId;
+      setBookingStatus("PENDING");
+
       alert(
-        `Booking Confirmed!
+        `✅ Booking Confirmed!
 
-            From: ${startName}
-            To: ${endName}
-            Distance: ${routeInfo.distance} km
-            Duration: ${routeInfo.duration} min
-            Fare: Rs ${fare}
+From: ${startName}
+To: ${endName}
+Distance: ${routeInfo.distance} km
+Duration: ${routeInfo.duration} min
+Fare: Rs ${fare}
 
-            Booking ID: ${response.data.bookingId}
-            Status: ${response.data.status}`
+Booking ID: ${bookingId}
+Status: PENDING - Finding driver...`
       );
 
-      handleRefresh();
+      // ✅ START POLLING FOR UPDATES
+      pollBookingStatus(bookingId, token);
     } catch (err) {
       console.error("Booking error:", err);
       alert(
@@ -396,6 +398,16 @@ const BookingRoutes = ({ user }) => {
                 </p>
               </div>
             </div>
+
+            {bookingStatus && (
+              <div className={`text-sm font-semibold p-2 rounded mb-3 ${
+                bookingStatus === "PENDING" ? "bg-yellow-100 text-yellow-800" :
+                bookingStatus === "ACCEPTED" ? "bg-green-100 text-green-800" :
+                "bg-red-100 text-red-800"
+              }`}>
+                Status: {bookingStatus === "PENDING" ? "⏳ Finding driver..." : bookingStatus}
+              </div>
+            )}
 
             <p className="text-sm text-gray-600 font-medium mt-4 border-t border-gray-200 pt-3">
               User: <span className="font-semibold">{getCurrentUser()}</span>
