@@ -181,10 +181,15 @@ const BookingRoutes = ({ user }) => {
       clearInterval(bookingCheckIntervalRef.current);
     }
 
+    let pollCount = 0;
     bookingCheckIntervalRef.current = setInterval(async () => {
+      pollCount++;
+      console.log(`📡 Poll #${pollCount} for booking ${bookingId}`);
+
       try {
+        // Try the /status endpoint first (like BookingConfirmation uses)
         const response = await axios.get(
-          `${API_URL}/api/bookings/${bookingId}`,
+          `${API_URL}/api/bookings/${bookingId}/status`,
           {
             headers: {
               Authorization: `Bearer ${token}`,
@@ -192,18 +197,50 @@ const BookingRoutes = ({ user }) => {
           }
         );
 
-        const booking = response.data;
-        setBookingStatus(booking.status);
+        const data = response.data;
+        // Handle both response formats
+        const status = data.status || data.bookingStatus;
+        const assignedDriver = data.assignedDriver || data.driver;
 
-        if (booking.status === "ACCEPTED") {
-          alert(`🎉 Driver found!\n\nDriver: ${booking.driverName}\nContact: ${booking.driverPhone}`);
+        console.log(`✅ Booking Status: ${status}`, data);
+        setBookingStatus(status);
+
+        if (status === "DRIVER_ASSIGNED" || status === "ACCEPTED") {
+          const driverInfo = assignedDriver || {};
+          alert(`🎉 Driver found!\n\nDriver: ${driverInfo.name || 'Unknown'}\nContact: ${driverInfo.mobile || 'N/A'}`);
           clearInterval(bookingCheckIntervalRef.current);
           handleRefresh();
-        } else if (booking.status === "COMPLETED" || booking.status === "CANCELLED") {
+        } else if (status === "FINISHED" || status === "COMPLETED" || status === "CANCELLED") {
           clearInterval(bookingCheckIntervalRef.current);
         }
       } catch (err) {
-        console.error("Error polling booking status:", err);
+        console.error("❌ Error polling booking status:", err.response?.data || err.message);
+        
+        // If /status endpoint doesn't exist, try the regular endpoint
+        if (err.response?.status === 404) {
+          console.log("⚠️ /status endpoint not found, trying regular endpoint...");
+          try {
+            const fallbackResponse = await axios.get(
+              `${API_URL}/api/bookings/${bookingId}`,
+              {
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                },
+              }
+            );
+            const booking = fallbackResponse.data;
+            console.log(`✅ Booking Status (fallback): ${booking.status}`, booking);
+            setBookingStatus(booking.status);
+
+            if (booking.status === "ACCEPTED") {
+              alert(`🎉 Driver found!\n\nDriver: ${booking.driverName || 'Unknown'}\nContact: ${booking.driverPhone || 'N/A'}`);
+              clearInterval(bookingCheckIntervalRef.current);
+              handleRefresh();
+            }
+          } catch (fallbackErr) {
+            console.error("❌ Both endpoints failed:", fallbackErr.message);
+          }
+        }
       }
     }, 2000); // Poll every 2 seconds
   };
@@ -230,6 +267,14 @@ const BookingRoutes = ({ user }) => {
     try {
       const fare = (routeInfo.distance * 50).toFixed(2);
 
+      console.log("📤 Sending booking request...", {
+        startLocation: startName,
+        endLocation: endName,
+        distance: routeInfo.distance,
+        estimatedTime: routeInfo.duration,
+        estimatedFare: parseFloat(fare),
+      });
+
       const response = await axios.post(
         `${API_URL}/api/bookings`,
         {
@@ -248,7 +293,17 @@ const BookingRoutes = ({ user }) => {
         }
       );
 
-      const bookingId = response.data.bookingId;
+      console.log("📥 Booking Response:", response.data);
+
+      // ✅ Handle different response formats
+      const bookingId = response.data.bookingId || response.data._id || response.data.id;
+      
+      if (!bookingId) {
+        alert("❌ Error: No booking ID returned from server");
+        console.error("No booking ID in response:", response.data);
+        return;
+      }
+
       setBookingStatus("PENDING");
 
       alert(
@@ -265,9 +320,10 @@ Status: PENDING - Finding driver...`
       );
 
       // ✅ START POLLING FOR UPDATES
+      console.log(`🔄 Starting to poll for booking ${bookingId}`);
       pollBookingStatus(bookingId, token);
     } catch (err) {
-      console.error("Booking error:", err);
+      console.error("❌ Booking error:", err.response?.data || err.message);
       alert(
         `Booking failed: ${
           err.response?.data?.message || err.message
