@@ -22,9 +22,11 @@ const BookingRoutes = ({ user }) => {
   const [startName, setStartName] = useState("Detecting your location...");
   const [endName, setEndName] = useState("Select destination");
   const [bookingStatus, setBookingStatus] = useState(null);
+  const [pollStatus, setPollStatus] = useState("idle"); // idle, polling, timeout, found
   const mapRef = useRef();
   const routingControlRef = useRef(null);
-  const bookingCheckIntervalRef = useRef(null);
+  const pollIntervalRef = useRef(null);
+  const abortControllerRef = useRef(null);
 
   useEffect(() => {
     if (navigator.geolocation) {
@@ -167,38 +169,59 @@ const BookingRoutes = ({ user }) => {
     setRouteInfo({ distance: 0, duration: 0 });
     setEndName("Select destination");
     setBookingStatus(null);
-    if (bookingCheckIntervalRef.current) {
-      clearInterval(bookingCheckIntervalRef.current);
+    setPollStatus("idle");
+    
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
     }
+    
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    
     if (mapRef.current && currentPos) {
       mapRef.current.setView(currentPos, 13);
     }
   };
 
-  // ✅ POLL FOR BOOKING STATUS UPDATES
+  // ✅ OPTIMIZED POLL FOR BOOKING STATUS WITH TIMEOUT
   const pollBookingStatus = (bookingId, token) => {
-    if (bookingCheckIntervalRef.current) {
-      clearInterval(bookingCheckIntervalRef.current);
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
     }
 
     let pollCount = 0;
-    bookingCheckIntervalRef.current = setInterval(async () => {
+    
+    const poll = async () => {
       pollCount++;
+      
+      // Cancel previous request if still pending
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      
+      abortControllerRef.current = new AbortController();
+      const timeoutId = setTimeout(() => abortControllerRef.current.abort(), 8000); // 8 second timeout
+
       console.log(`📡 Poll #${pollCount} for booking ${bookingId}`);
+      setPollStatus("polling");
 
       try {
-        // Try the /status endpoint first (like BookingConfirmation uses)
+        // Try the /status endpoint first
         const response = await axios.get(
           `${API_URL}/api/bookings/${bookingId}/status`,
           {
             headers: {
               Authorization: `Bearer ${token}`,
             },
+            signal: abortControllerRef.current.signal,
           }
         );
 
+        clearTimeout(timeoutId);
         const data = response.data;
-        // Handle both response formats
         const status = data.status || data.bookingStatus;
         const assignedDriver = data.assignedDriver || data.driver;
 
@@ -206,17 +229,27 @@ const BookingRoutes = ({ user }) => {
         setBookingStatus(status);
 
         if (status === "DRIVER_ASSIGNED" || status === "ACCEPTED") {
+          setPollStatus("found");
           const driverInfo = assignedDriver || {};
           alert(`🎉 Driver found!\n\nDriver: ${driverInfo.name || 'Unknown'}\nContact: ${driverInfo.mobile || 'N/A'}`);
-          clearInterval(bookingCheckIntervalRef.current);
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
           handleRefresh();
         } else if (status === "FINISHED" || status === "COMPLETED" || status === "CANCELLED") {
-          clearInterval(bookingCheckIntervalRef.current);
+          setPollStatus("idle");
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
         }
       } catch (err) {
-        console.error("❌ Error polling booking status:", err.response?.data || err.message);
-        
-        // If /status endpoint doesn't exist, try the regular endpoint
+        clearTimeout(timeoutId);
+
+        if (err.code === 'ECONNABORTED' || axios.isCancel(err)) {
+          console.warn("⏱️ Poll request timed out - retrying...");
+          setPollStatus("timeout");
+          // Continue polling despite timeout
+          return;
+        }
+
         if (err.response?.status === 404) {
           console.log("⚠️ /status endpoint not found, trying regular endpoint...");
           try {
@@ -231,18 +264,31 @@ const BookingRoutes = ({ user }) => {
             const booking = fallbackResponse.data;
             console.log(`✅ Booking Status (fallback): ${booking.status}`, booking);
             setBookingStatus(booking.status);
+            setPollStatus("idle");
 
             if (booking.status === "ACCEPTED") {
+              setPollStatus("found");
               alert(`🎉 Driver found!\n\nDriver: ${booking.driverName || 'Unknown'}\nContact: ${booking.driverPhone || 'N/A'}`);
-              clearInterval(bookingCheckIntervalRef.current);
+              clearInterval(pollIntervalRef.current);
+              pollIntervalRef.current = null;
               handleRefresh();
             }
           } catch (fallbackErr) {
             console.error("❌ Both endpoints failed:", fallbackErr.message);
+            setPollStatus("idle");
           }
+        } else {
+          console.error("❌ Error polling:", err.message);
+          setPollStatus("idle");
         }
       }
-    }, 2000); // Poll every 2 seconds
+    };
+
+    // Poll immediately
+    poll();
+
+    // Then poll every 3 seconds (more lenient than 2 seconds)
+    pollIntervalRef.current = setInterval(poll, 3000);
   };
 
   const saveRoute = async () => {
@@ -275,6 +321,10 @@ const BookingRoutes = ({ user }) => {
         estimatedFare: parseFloat(fare),
       });
 
+      // Add timeout to booking request too
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+
       const response = await axios.post(
         `${API_URL}/api/bookings`,
         {
@@ -290,12 +340,13 @@ const BookingRoutes = ({ user }) => {
           headers: {
             Authorization: `Bearer ${token}`,
           },
+          signal: controller.signal,
         }
       );
 
+      clearTimeout(timeoutId);
       console.log("📥 Booking Response:", response.data);
 
-      // ✅ Handle different response formats
       const bookingId = response.data.bookingId || response.data._id || response.data.id;
       
       if (!bookingId) {
@@ -319,16 +370,20 @@ Booking ID: ${bookingId}
 Status: PENDING - Finding driver...`
       );
 
-      // ✅ START POLLING FOR UPDATES
+      // ✅ START OPTIMIZED POLLING FOR UPDATES
       console.log(`🔄 Starting to poll for booking ${bookingId}`);
       pollBookingStatus(bookingId, token);
     } catch (err) {
-      console.error("❌ Booking error:", err.response?.data || err.message);
-      alert(
-        `Booking failed: ${
-          err.response?.data?.message || err.message
-        }`
-      );
+      if (err.code === 'ECONNABORTED') {
+        alert("Booking request timed out. Please try again.");
+      } else {
+        console.error("❌ Booking error:", err.response?.data || err.message);
+        alert(
+          `Booking failed: ${
+            err.response?.data?.message || err.message
+          }`
+        );
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -458,10 +513,26 @@ Status: PENDING - Finding driver...`
             {bookingStatus && (
               <div className={`text-sm font-semibold p-2 rounded mb-3 ${
                 bookingStatus === "PENDING" ? "bg-yellow-100 text-yellow-800" :
-                bookingStatus === "ACCEPTED" ? "bg-green-100 text-green-800" :
+                (bookingStatus === "ACCEPTED" || bookingStatus === "DRIVER_ASSIGNED") ? "bg-green-100 text-green-800" :
                 "bg-red-100 text-red-800"
               }`}>
-                Status: {bookingStatus === "PENDING" ? "⏳ Finding driver..." : bookingStatus}
+                Status: {
+                  bookingStatus === "PENDING" ? "⏳ Finding driver..." : 
+                  bookingStatus === "DRIVER_ASSIGNED" || bookingStatus === "ACCEPTED" ? "✅ Driver found!" :
+                  bookingStatus
+                }
+              </div>
+            )}
+
+            {pollStatus === "polling" && (
+              <div className="text-xs text-blue-600 font-medium mb-3">
+                🔄 Searching for driver...
+              </div>
+            )}
+
+            {pollStatus === "timeout" && (
+              <div className="text-xs text-orange-600 font-medium mb-3">
+                ⏱️ Connection timeout - retrying...
               </div>
             )}
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 
@@ -14,6 +14,10 @@ const DriverDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
   const [lastChecked, setLastChecked] = useState(null);
+  const [pollStatus, setPollStatus] = useState('idle'); // idle, polling, paused
+  const [pollInterval, setPollInterval] = useState(5000); // Start with 5 seconds
+  const pollIntervalRef = useRef(null);
+  const abortControllerRef = useRef(null);
 
   const token = localStorage.getItem('token');
   const driverId = localStorage.getItem('userId');
@@ -36,30 +40,65 @@ const DriverDashboard = () => {
     }
   };
 
-  // ✅ FETCH PENDING BOOKINGS - Only for AVAILABLE drivers
+  // ✅ OPTIMIZED FETCH PENDING BOOKINGS - With timeout and error handling
   const fetchAvailableRides = async () => {
-    try {
-      if (!isAvailable) {
-        setRides([]);
-        return;
-      }
+    if (!isAvailable) {
+      setRides([]);
+      return;
+    }
 
+    // Cancel previous request if still pending
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    // Create new abort controller for this request
+    abortControllerRef.current = new AbortController();
+    const timeoutId = setTimeout(() => abortControllerRef.current.abort(), 8000); // 8 second timeout
+
+    try {
+      setPollStatus('polling');
       console.log('🔍 Polling for new rides...');
 
       const response = await axios.get(`${BOOKINGS_API}/pending`, {
-        headers: { Authorization: `Bearer ${token}` }
+        headers: { Authorization: `Bearer ${token}` },
+        signal: abortControllerRef.current.signal
       });
+
+      clearTimeout(timeoutId);
 
       if (response.data && response.data.length > 0) {
         console.log(`📱 Found ${response.data.length} pending bookings`);
         setRides(response.data);
+        
+        // Speed up polling when we have rides (check every 1 second)
+        if (pollInterval !== 1000) {
+          setPollInterval(1000);
+        }
       } else {
         setRides([]);
+        
+        // Slow down polling when no rides (check every 10 seconds)
+        if (pollInterval !== 10000) {
+          setPollInterval(10000);
+        }
       }
       
       setLastChecked(new Date().toLocaleTimeString());
+      setPollStatus('idle');
     } catch (error) {
-      console.error('Error fetching rides:', error);
+      clearTimeout(timeoutId);
+
+      if (error.code === 'ECONNABORTED') {
+        console.warn('⏱️ Poll request timed out - skipping this check');
+        setPollStatus('paused');
+      } else if (axios.isCancel(error)) {
+        console.log('📍 Previous poll cancelled');
+      } else {
+        console.error('❌ Error fetching rides:', error.message);
+        setPollStatus('idle');
+      }
+      
       setRides([]);
     }
   };
@@ -80,9 +119,11 @@ const DriverDashboard = () => {
       
       if (!newAvailability) {
         setRides([]);
+        setPollStatus('idle');
         console.log('✅ Driver went offline');
       } else {
-        console.log('✅ Driver is now online - polling for rides');
+        console.log('✅ Driver is now online - starting polling');
+        setPollInterval(5000); // Reset to 5 seconds when going online
         // Immediately fetch rides when going online
         await fetchAvailableRides();
       }
@@ -111,7 +152,7 @@ const DriverDashboard = () => {
       // Show confirmation
       alert(`🎉 Ride accepted!\nBooking ID: ${rideId}`);
       
-      // Navigate to ride details (you can modify this route as needed)
+      // Navigate to ride details
       navigate(`/booking/${rideId}`);
     } catch (error) {
       console.error('Error accepting ride:', error);
@@ -141,22 +182,44 @@ const DriverDashboard = () => {
     fetchDriverProfile();
   }, [driverId]);
 
-  // ✅ POLLING - Every 2 seconds when driver is available
+  // ✅ SMART POLLING - Adaptive interval based on ride availability
   useEffect(() => {
-    if (!isAvailable) return;
+    if (!isAvailable) {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+      return;
+    }
+
+    // Clear existing interval
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+    }
 
     // Fetch immediately
     fetchAvailableRides();
 
-    // Then poll every 2 seconds
-    const pollInterval = setInterval(() => {
+    // Set up polling with current interval
+    pollIntervalRef.current = setInterval(() => {
       fetchAvailableRides();
-    }, 2000);
+    }, pollInterval);
 
-    return () => clearInterval(pollInterval);
-  }, [isAvailable, token]);
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+    };
+  }, [isAvailable, pollInterval, token]);
 
   const handleLogout = () => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+    }
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
     localStorage.clear();
     navigate('/');
   };
@@ -220,11 +283,22 @@ const DriverDashboard = () => {
         </button>
       </div>
 
-      {/* Polling Status */}
+      {/* Polling Status - IMPROVED */}
       {isAvailable && (
-        <div className="bg-blue-50 border border-blue-200 rounded p-3 text-xs sm:text-sm text-blue-800">
-          <p className="font-medium">⏱️ Polling active every 2 seconds</p>
+        <div className={`border rounded p-3 text-xs sm:text-sm font-medium transition ${
+          pollStatus === 'polling' 
+            ? 'bg-yellow-50 border-yellow-200 text-yellow-800' 
+            : pollStatus === 'paused'
+            ? 'bg-orange-50 border-orange-200 text-orange-800'
+            : 'bg-blue-50 border-blue-200 text-blue-800'
+        }`}>
+          <p>
+            ⏱️ Polling every {(pollInterval / 1000).toFixed(0)} seconds
+            {pollStatus === 'polling' && ' (fetching...)'}
+            {pollStatus === 'paused' && ' (⚠️ request timeout - retrying...)'}
+          </p>
           {lastChecked && <p className="text-xs mt-1">Last checked: {lastChecked}</p>}
+          {rides.length > 0 && <p className="text-xs mt-1">📊 Faster polling active (rides available)</p>}
         </div>
       )}
 
