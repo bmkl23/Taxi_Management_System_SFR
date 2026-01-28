@@ -98,9 +98,17 @@ export default function TourHistoryPage() {
                     <td className="px-4 py-3 border-b text-sm font-medium">{b.assigned_driver?.name || "Unassigned"}</td>
                     <td className="px-4 py-3 border-b text-sm">{b.startLocation || b.pickup || "N/A"}</td>
                     <td className="px-4 py-3 border-b text-sm">{b.endLocation || b.drop || "N/A"}</td>
-                    <td className="px-4 py-3 border-b text-sm text-center">{b.distance || b.distance_km ?? 0}</td>
-                    <td className="px-4 py-3 border-b text-sm text-center">{b.estimatedTime || b.time_minutes ?? 0}</td>
-                    <td className="px-4 py-3 border-b text-sm font-semibold text-green-600">Rs {b.estimatedFare || b.estimated_fare ?? 0}</td>
+       <td className="px-4 py-3 border-b text-sm text-center">
+  {b.distance ?? b.distance_km ?? 0}
+</td>
+
+<td className="px-4 py-3 border-b text-sm text-center">
+  {b.estimatedTime ?? b.time_minutes ?? 0}
+</td>
+
+<td className="px-4 py-3 border-b text-sm font-semibold text-green-600">
+  Rs {b.estimatedFare ?? b.estimated_fare ?? 0}
+</td>
                     <td className="px-4 py-3 border-b text-sm">
                       <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
                         b.status === 'ONGOING' ? 'bg-blue-100 text-blue-700'
